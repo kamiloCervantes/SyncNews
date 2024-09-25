@@ -1,6 +1,7 @@
 import psycopg2
 from psycopg2 import sql
 from threading import Lock
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
