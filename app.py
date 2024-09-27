@@ -5,6 +5,7 @@ import base64
 import os
 from bs4 import BeautifulSoup
 import openai
+from openai import OpenAI
 from DatabaseConnection import DatabaseConnection
 import psycopg2
 from datetime import datetime
@@ -13,9 +14,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
+client = OpenAI(
+    # This is the default and can be omitted
+    api_key=os.getenv('OPENAI_API_KEY')
+)
 
 
-openai.api_key = os.getenv('OPENAI_API_KEY')
+#openai.api_key = os.getenv('OPENAI_API_KEY')
 news_titles = []
 api_config = {
     'img_dir' : '/home/tuvex/SyncNewsApi/api/img/'
@@ -68,15 +73,16 @@ def saveNewsTitle(title, newsType):
         #connection.close()
 
 def chat_with_gpt(prompt):
-    response = openai.Completion.create(
-        engine="gpt-4",  # También puedes usar "gpt-3.5-turbo" o "gpt-4"
-        prompt=prompt,
-        max_tokens=10000,  # Número máximo de tokens en la respuesta
-        n=1,  # Número de respuestas que deseas obtener
-        stop=None,  # Puedes definir cadenas de texto para detener la generación
-        temperature=0.7  # Controla la aleatoriedad (valores entre 0 y 1)
+    chat_completion = client.chat.completions.create(
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        model="gpt-3.5-turbo",
     )
-    return response.choices[0].text.strip()
+    return chat_completion.choices[0].message.content
 
 def getWordpressToken(wordpress_user, wordpress_password):    
     wordpress_credentials = wordpress_user + ':' + wordpress_password
@@ -97,27 +103,58 @@ def getImage(imageURL):
         handler.write(imageData.content)
     return api_config['img_dir']+imageName
 
+def processPostData(post):
+    post_helper = post
+    new_content = chat_with_gpt("En el contexto de un periodista independiente reescribe nuevamente el siguiente texto: "+post['content'])
+    post_helper['content'] = new_content
+    return post_helper
+
 def getPostDataFromUrl(type, url):
     post = {}
-    match type:
-        case 'gobcordoba':
-            baseURL = 'https://www.cordoba.gov.co'
-            page = requests.get(url, headers=headers)
-            soup = BeautifulSoup(page.content, "html.parser")
-            titleElement = soup.select('#infoPrincipal h1')
-            title = titleElement[0].text
-            featuredImageElement = soup.select('#infoPrincipal .modContent img')
-            featuredImageURL = baseURL+featuredImageElement[0]['src']
-            featuredImageAbsPath = getImage(featuredImageURL)
-            contentElement = soup.select('#infoPrincipal .modContent .pgel')
-            content = contentElement[0].text
-            post = {
-                'title': title,
-                'featuredImageURL': featuredImageURL,
-                'featuredImageAbsPath': featuredImageAbsPath,
-                'content': content 
-            }    
+    try:
+        match type:
+            case 'gobcordoba':
+                baseURL = 'https://www.cordoba.gov.co'
+                page = requests.get(url, headers=headers)
+                soup = BeautifulSoup(page.content, "html.parser")
+                titleElement = soup.select('#infoPrincipal h1')
+                title = titleElement[0].text
+                featuredImageElement = soup.select('#infoPrincipal .modContent img')
+                featuredImageURL = baseURL+featuredImageElement[0]['src']
+                featuredImageAbsPath = getImage(featuredImageURL)
+                contentElement = soup.select('#infoPrincipal .modContent .pgel')
+                content = contentElement[0].text
+                post = {
+                    'title': title,
+                    'featuredImageURL': featuredImageURL,
+                    'featuredImageAbsPath': featuredImageAbsPath,
+                    'content': content 
+                }    
+                processPostData(post)
+    except openai.BadRequestError as e:
+        print(f"Error en la solicitud: {e}")
+    except openai.AuthenticationError as e:
+        print(f"Error de autenticación: {e}")
+    except openai.PermissionDeniedError as e:
+        print(f"Permiso denegado: {e}")
+    except openai.NotFoundError as e:
+        print(f"No se pudo encontrar el recurso: {e}")
+    except openai.UnprocessableEntityError as e:
+        print(f"No se pudo procesar la entidad: {e}")
+    except openai.RateLimitError as e:
+        print(f"Se ha superado el límite de tasa: {e}")
+    except openai.APIConnectionError as e:
+        print(f"Error de conexión a la API: {e}")
+    except openai.InternalServerError as e:
+        print(f"Error en el servidor de OpenAI: {e}")
+    except openai.Timeout as e:
+        print(f"La solicitud tardó demasiado tiempo en responder: {e}")
+    except Exception as e:
+         print(f"Ocurrió un error inesperado: {e}")
+
     return post
+
+
 
 def getNewsDataFromSource(newsType, url):
     posts = []
@@ -129,7 +166,7 @@ def getNewsDataFromSource(newsType, url):
             for e in soup.select('div.contentPubTema div.post-content h2.title a'):
                 title = e.text.strip()
                 url_post = e['href']                
-                if title not in news_gobcord:
+                if title in news_gobcord:
                     posts.append(getPostDataFromUrl(newsType, url_post))
                     news_titles.append({
                         'title' : title,
