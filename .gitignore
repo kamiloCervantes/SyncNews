@@ -1,0 +1,4 @@
+img/*
+dependencies
+.env
+__pycache__/*
