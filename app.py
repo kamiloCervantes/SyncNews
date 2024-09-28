@@ -70,7 +70,37 @@ def saveNewsTitle(title, newsType):
         print(f"Error al conectar con PostgreSQL: {error}")
     finally:
         cursor.close() 
-        #connection.close()
+
+def log(logType, logData, logDetails):    
+    connection = db.connection
+    cursor = connection.cursor()  
+    try:   
+        insert_query = '''
+        INSERT INTO logs (event_time, log_level, source, message) 
+            VALUES (NOW(), %s, %s, %s) RETURNING log_id;
+        '''
+        data = (logData['log_level'], logData['source'], logData['message'])
+
+        cursor.execute(insert_query, data)
+        log_id = cursor.fetchone()[0]        
+
+        for l in logDetails:
+            insert_detail = '''
+             INSERT INTO log_details (log_id, field_name, field_value, field_type) 
+                VALUES
+                 (%s, %s, %s, %s)
+            '''
+            detail_data = (log_id, l['field_name'], l['field_value'], l['field_type'])
+            cursor.execute(insert_detail, detail_data)
+        connection.commit()      
+        
+    except (Exception, psycopg2.Error) as error:
+        print(f"Error al conectar con PostgreSQL: {error}")
+    except Exception as e:
+         print(f"Ocurrió un error inesperado: {e}")
+    finally:
+        cursor.close() 
+
 
 def chat_with_gpt(prompt):
     chat_completion = client.chat.completions.create(
@@ -80,7 +110,7 @@ def chat_with_gpt(prompt):
                 "content": prompt,
             }
         ],
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
     )
     return chat_completion.choices[0].message.content
 
@@ -103,10 +133,42 @@ def getImage(imageURL):
         handler.write(imageData.content)
     return api_config['img_dir']+imageName
 
+def logPostData(post_helper):
+    log('PostDataFromUrl', {
+        'log_level' : 'INFO',
+        'source' :'processPostData',
+        'message' : 'Se obtuvo una respuesta exitosa de ChatGPT'
+    },
+    [{
+        'field_name' : 'previous_content',
+        'field_value' : post_helper['previous_content'],
+        'field_type' : 'TEXT'
+    },
+    {
+        'field_name' : 'generated_content',
+        'field_value' : post_helper['content'],
+        'field_type' : 'TEXT'
+    },
+    {
+        'field_name' : 'prompt',
+        'field_value' : post_helper['prompt'],
+        'field_type' : 'TEXT'
+    },
+    {
+        'field_name' : 'post_title',
+        'field_value' : post_helper['title'],
+        'field_type' : 'TEXT'
+    }])
+
 def processPostData(post):
+    print('Processing post!')
     post_helper = post
-    new_content = chat_with_gpt("En el contexto de un periodista independiente reescribe nuevamente el siguiente texto: "+post['content'])
+    prompt = "En el contexto de un periodista independiente reescribe nuevamente el siguiente texto: "+post['content']
+    new_content = chat_with_gpt(prompt)
+    post_helper['previous_content'] = post['content']
     post_helper['content'] = new_content
+    post_helper['prompt'] = prompt
+    logPostData(post_helper)
     return post_helper
 
 def getPostDataFromUrl(type, url):
@@ -130,7 +192,7 @@ def getPostDataFromUrl(type, url):
                     'featuredImageAbsPath': featuredImageAbsPath,
                     'content': content 
                 }    
-                processPostData(post)
+                post = processPostData(post)
     except openai.BadRequestError as e:
         print(f"Error en la solicitud: {e}")
     except openai.AuthenticationError as e:
@@ -166,7 +228,7 @@ def getNewsDataFromSource(newsType, url):
             for e in soup.select('div.contentPubTema div.post-content h2.title a'):
                 title = e.text.strip()
                 url_post = e['href']                
-                if title in news_gobcord:
+                if title not in news_gobcord:
                     posts.append(getPostDataFromUrl(newsType, url_post))
                     news_titles.append({
                         'title' : title,
@@ -209,6 +271,37 @@ def publishPostToWordpress(postData):
     response = {}    
     os.remove(postData['featuredImageAbsPath']) 
     return response
+
+@app.route('/sync-news-test', methods=['POST'])
+def sync_news_post_test():
+    response = {}   
+    post = {
+        'title' : 'Test title',
+        'content': 'Montería, 25 de septiembre de 2024. Se acaba el mes de septiembre y el lunes 30 se vence el plazo para que los contribuyentes de la capital aprovechen el último descuento del año. Se trata de la reducción del 50 % en los intereses moratorios para todas las obligaciones en mora. Los pagos se pueden hacer de manera virtual, a través del portal de impuestos ingresando a www.monteria.gov.co para hacer el pago por el botón PSE. De igual manera, los monterianos pueden acercarse a la oficina de rentas para ser atendido de manera presencial. El alcalde de Montería, Hugo Kerguelén García, recordó a los contribuyentes que sus “aportes son determinantes para la realización de las obras y el desarrollo de la ciudad”.'
+    }
+    try:
+        processPostData(post)
+    except openai.BadRequestError as e:
+        print(f"Error en la solicitud: {e}")
+    except openai.AuthenticationError as e:
+        print(f"Error de autenticación: {e}")
+    except openai.PermissionDeniedError as e:
+        print(f"Permiso denegado: {e}")
+    except openai.NotFoundError as e:
+        print(f"No se pudo encontrar el recurso: {e}")
+    except openai.UnprocessableEntityError as e:
+        print(f"No se pudo procesar la entidad: {e}")
+    except openai.RateLimitError as e:
+        print(f"Se ha superado el límite de tasa: {e}")
+    except openai.APIConnectionError as e:
+        print(f"Error de conexión a la API: {e}")
+    except openai.InternalServerError as e:
+        print(f"Error en el servidor de OpenAI: {e}")
+    except openai.Timeout as e:
+        print(f"La solicitud tardó demasiado tiempo en responder: {e}")
+    except Exception as e:
+         print(f"Ocurrió un error inesperado: {e}")
+    return jsonify(response) 
 
 
 @app.route('/sync-news', methods=['POST'])
